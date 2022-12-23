@@ -1,0 +1,38 @@
+# Copyright (c) 2022, Prevas A/S
+# SPDX-License-Identifier: Apache-2.0
+
+description: NXP MCUX QDEC
+
+compatible: "nxp,mcux-qdec"
+
+include: [pinctrl-device.yaml, sensor-device.yaml]
+
+properties:
+
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  counts-per-revolution:
+    type: int
+    required: true
+    description: |
+      This is a number that is used to determine how many revolutions
+      were done based on the current counter's value.
+
+  xbar:
+    type: array
+    required: true
+    description: |
+      The xbar base address. This should match the chosen xbar-maps.
+
+  xbar-maps:
+    type: array
+    required: true
+    description: |
+      Crossbar input and output mappings. Input is followed by the output.
+      Input should match pinctrl mapping in dtsi. The desired values can be
+      found by searching for 'enum _xbar_' in
+      modules/hal/nxp/mcux/mcux-sdk/devices/<device>/<device>.h.
