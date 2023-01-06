@@ -26,6 +26,7 @@ struct qdec_mcux_config {
 #ifdef CONFIG_PINCTRL
 	const struct pinctrl_dev_config *pincfg;
 #endif /* CONFIG_PINCTRL */
+	uint32_t counts_per_revolution;
 	uint32_t xbar;
 	size_t xbar_maps_len;
 	int xbar_maps[];
@@ -148,6 +149,29 @@ static void init_inputs(const struct device *dev)
 	}
 }
 
+static int qdec_mcux_init(const struct device *dev)
+{
+	const struct qdec_mcux_config *config = dev->config;
+	struct qdec_mcux_data *data = dev->data;
+
+	LOG_DBG("Initializing %s", dev->name);
+
+	init_inputs(dev);
+
+	ENC_GetDefaultConfig(&data->qdec_config);
+	data->qdec_config.positionModulusValue = config->counts_per_revolution;
+	data->qdec_config.revolutionCountCondition =
+		kENC_RevolutionCountOnRollOverModulus;
+	data->qdec_config.enableModuloCountMode = true;
+
+	ENC_Init(config->base, &data->qdec_config);
+
+	/* Update the position counter with initial value. */
+	ENC_DoSoftwareLoadInitialPositionValue(config->base);
+
+	return 0;
+}
+
 #ifdef CONFIG_PINCTRL
 #define QDEC_MCUX_PINCTRL_DEFINE(n) PINCTRL_DT_INST_DEFINE(n);
 #define QDEC_MCUX_PINCTRL_INIT(n) .pincfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),
@@ -167,38 +191,14 @@ static void init_inputs(const struct device *dev)
 										\
 	static const struct qdec_mcux_config qdec_mcux_##n##_config = {		\
 		.base = (ENC_Type *)DT_INST_REG_ADDR(n),			\
-		.xbar = (uint32_t)DT_INST_PROP(n, xbar),					\
+		.counts_per_revolution = DT_INST_PROP(n, counts_per_revolution),\
+		.xbar = (uint32_t)DT_INST_PROP(n, xbar),			\
 		.xbar_maps_len = DT_INST_PROP_LEN(n, xbar_maps),		\
 		.xbar_maps = DT_INST_PROP(n, xbar_maps),			\
 		QDEC_MCUX_PINCTRL_INIT(n)					\
 	};									\
 										\
-	static int qdec_mcux_##n##_init(const struct device *dev)		\
-	{									\
-		const struct qdec_mcux_config *config = dev->config;		\
-		struct qdec_mcux_data *data = dev->data;			\
-										\
-		LOG_DBG("Initializing %s", dev->name);				\
-										\
-		init_inputs(dev);						\
-										\
-		ENC_GetDefaultConfig(&data->qdec_config);			\
-		data->qdec_config.positionModulusValue =			\
-			DT_INST_PROP(n, counts_per_revolution);			\
-		data->qdec_config.revolutionCountCondition =			\
-			kENC_RevolutionCountOnRollOverModulus;			\
-		data->qdec_config.enableModuloCountMode = true;			\
-										\
-		ENC_Init(config->base, &data->qdec_config);			\
-										\
-		/* Update the position counter with initial value. */		\
-		ENC_DoSoftwareLoadInitialPositionValue(config->base);		\
-										\
-		return 0;							\
-	}									\
-										\
-										\
-	SENSOR_DEVICE_DT_INST_DEFINE(n, qdec_mcux_##n##_init, NULL,		\
+	SENSOR_DEVICE_DT_INST_DEFINE(n, qdec_mcux_init, NULL,			\
 			      &qdec_mcux_##n##_data, &qdec_mcux_##n##_config,	\
 			      POST_KERNEL, CONFIG_SENSOR_INIT_PRIORITY,		\
 			      &qdec_mcux_api);					\
