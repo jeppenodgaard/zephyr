@@ -418,6 +418,10 @@ static int flash_flexspi_hyperflash_write(const struct device *dev, off_t offset
 		return -EINVAL;
 	}
 
+#ifdef CONFIG_HAS_MCUX_CACHE
+	SCB_DisableICache();
+#endif
+
 	if (memc_flexspi_is_running_xip(data->controller)) {
 		/*
 		 * ==== ENTER CRITICAL SECTION ====
@@ -426,6 +430,9 @@ static int flash_flexspi_hyperflash_write(const struct device *dev, off_t offset
 		 */
 		key = irq_lock();
 	}
+
+	(void)memc_flexspi_update_clock(data->controller, &data->config,
+					data->port, MEMC_FLEXSPI_CLOCK_42M);
 
 	while (len) {
 		/* Writing between two page sizes crashes the platform so we
@@ -466,6 +473,9 @@ static int flash_flexspi_hyperflash_write(const struct device *dev, off_t offset
 		len -= i;
 	}
 
+	(void)memc_flexspi_update_clock(data->controller, &data->config,
+					data->port, MEMC_FLEXSPI_CLOCK_166M);
+
 	if (memc_flexspi_is_running_xip(data->controller)) {
 		/* ==== EXIT CRITICAL SECTION ==== */
 		irq_unlock(key);
@@ -473,6 +483,7 @@ static int flash_flexspi_hyperflash_write(const struct device *dev, off_t offset
 
 #ifdef CONFIG_HAS_MCUX_CACHE
 	DCACHE_InvalidateByRange((uint32_t) dst, size);
+	SCB_EnableICache();
 #endif
 
 	return ret;
@@ -503,6 +514,10 @@ static int flash_flexspi_hyperflash_erase(const struct device *dev, off_t offset
 		LOG_ERR("Invalid offset");
 		return -EINVAL;
 	}
+
+#ifdef CONFIG_HAS_MCUX_CACHE
+	SCB_DisableICache();
+#endif
 
 	if (memc_flexspi_is_running_xip(data->controller)) {
 		/*
@@ -554,6 +569,7 @@ static int flash_flexspi_hyperflash_erase(const struct device *dev, off_t offset
 
 #ifdef CONFIG_HAS_MCUX_CACHE
 	DCACHE_InvalidateByRange((uint32_t) dst, size);
+	SCB_EnableICache();
 #endif
 
 	return ret;
