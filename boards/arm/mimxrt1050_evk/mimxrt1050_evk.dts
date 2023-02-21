@@ -24,6 +24,7 @@
 	};
 
 	chosen {
+		zephyr,uart-mcumgr=&lpuart3;
 		zephyr,sram = &sdram0;
 		zephyr,itcm = &itcm;
 		zephyr,dtcm = &dtcm;
@@ -221,6 +222,14 @@ arduino_serial: &lpuart3 {
 	current-speed = <115200>;
 	pinctrl-0 = <&pinmux_lpuart1>;
 	pinctrl-1 = <&pinmux_lpuart1_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+&lpuart3 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&pinmux_lpuart3>;
+	pinctrl-1 = <&pinmux_lpuart3_sleep>;
 	pinctrl-names = "default", "sleep";
 };
 
