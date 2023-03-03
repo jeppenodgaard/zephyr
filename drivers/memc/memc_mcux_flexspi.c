@@ -79,18 +79,27 @@ int memc_flexspi_update_clock(const struct device *dev,
 {
 #if CONFIG_SOC_SERIES_IMX_RT10XX
 	struct memc_flexspi_data *data = dev->data;
+	static uint32_t freq_orig = UINT32_MAX;
+	static uint32_t div_orig = UINT32_MAX;
+	if (div_orig == UINT32_MAX) {
+		freq_orig = CLOCK_GetClockRootFreq(kCLOCK_FlexspiClkRoot);
+		div_orig = CLOCK_GetDiv(kCLOCK_FlexspiDiv); /* Backup currect div setting */
+	}
+	uint32_t freq_in     = freq_orig * (div_orig + 1);      /* Calculate input clock */
+	uint32_t div_prog    = (freq_in - 1) / 100000000;       /* Calculate divider to get below 50 MHz DDR */
+	uint32_t freq_prog   = freq_in / (div_prog + 1);        /* Calculate frequency used during programming */
 
 	memc_flexspi_wait_bus_idle(dev);
 
 	FLEXSPI_Enable(data->base, false);
 
-	flexspi_clock_set_div(clock == MEMC_FLEXSPI_CLOCK_166M ? 0 : 3);
+	flexspi_clock_set_div(clock == MEMC_FLEXSPI_CLOCK_166M ? div_orig : div_prog);
 
 	FLEXSPI_Enable(data->base, true);
 
 	memc_flexspi_reset(dev);
 
-	device_config->flexspiRootClk = flexspi_clock_get_freq();
+	device_config->flexspiRootClk = MEMC_FLEXSPI_CLOCK_166M ? freq_orig : freq_prog;
 	FLEXSPI_UpdateDllValue(data->base, device_config, port);
 
 	memc_flexspi_reset(dev);
