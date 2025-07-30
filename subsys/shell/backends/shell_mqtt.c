@@ -53,18 +53,6 @@ static inline int sh_mqtt_work_submit(struct k_work *work)
 	return k_work_submit_to_queue(&sh_mqtt->workq, work);
 }
 
-/* Lock the context of the shell mqtt */
-static inline int sh_mqtt_context_lock(k_timeout_t timeout)
-{
-	return k_mutex_lock(&sh_mqtt->lock, timeout);
-}
-
-/* Unlock the context of the shell mqtt */
-static inline void sh_mqtt_context_unlock(void)
-{
-	(void)k_mutex_unlock(&sh_mqtt->lock);
-}
-
 bool __weak shell_mqtt_get_devid(char *id, int id_max_len)
 {
 	uint8_t hwinfo_id[DEVICE_ID_BIN_MAX_SIZE];
@@ -154,7 +142,7 @@ static void sh_mqtt_close_and_cleanup(struct shell_mqtt *sh)
 	 * disconnection packet to the broker, it will invoke
 	 * mqtt_evt_handler:MQTT_EVT_DISCONNECT if success
 	 */
-	if ((sh->network_state == SHELL_MQTT_NETWORK_CONNECTED) &&
+	if (atomic_get(&sh->is_net_connected) &&
 	    (sh->transport_state == SHELL_MQTT_TRANSPORT_CONNECTED)) {
 		rc = mqtt_disconnect(&sh->mqtt_cli, NULL);
 	}
@@ -170,6 +158,15 @@ static void sh_mqtt_close_and_cleanup(struct shell_mqtt *sh)
 
 	/* Cleanup socket */
 	clear_fds(sh);
+}
+
+static void cancel_dworks_and_cleanup(struct shell_mqtt *sh)
+{
+	(void)k_work_cancel_delayable(&sh->connect_dwork);
+	(void)k_work_cancel_delayable(&sh->subscribe_dwork);
+	(void)k_work_cancel_delayable(&sh->process_dwork);
+	(void)k_work_cancel_delayable(&sh->publish_dwork);
+	sh_mqtt_close_and_cleanup(sh);
 }
 
 static void broker_init(struct shell_mqtt *sh)
@@ -222,15 +219,9 @@ static void sh_mqtt_process_handler(struct k_work *work)
 	int64_t remaining = LISTEN_TIMEOUT_MS;
 	int64_t start_time = k_uptime_get();
 
-	if (sh->network_state != SHELL_MQTT_NETWORK_CONNECTED) {
+	if (!atomic_get(&sh->is_net_connected)) {
 		LOG_DBG("%s_work while %s", "process", "network disconnected");
-		return;
-	}
-
-	/* If context can't be locked, that means net conn cb locked it */
-	if (sh_mqtt_context_lock(K_NO_WAIT) != 0) {
-		/* In that case we should simply return */
-		LOG_DBG("%s_work unable to lock context", "process");
+		cancel_dworks_and_cleanup(sh);
 		return;
 	}
 
@@ -246,7 +237,7 @@ static void sh_mqtt_process_handler(struct k_work *work)
 
 	LOG_DBG("MQTT %s", "Processing");
 	/* Listen to the port for a duration defined by LISTEN_TIMEOUT_MS */
-	while ((remaining > 0) && (sh->network_state == SHELL_MQTT_NETWORK_CONNECTED) &&
+	while ((remaining > 0) && atomic_get(&sh->is_net_connected) &&
 	       (sh->transport_state == SHELL_MQTT_TRANSPORT_CONNECTED) &&
 	       (sh->subscribe_state == SHELL_MQTT_SUBSCRIBED)) {
 		LOG_DBG("Listening to socket");
@@ -275,14 +266,12 @@ static void sh_mqtt_process_handler(struct k_work *work)
 	/* Reschedule the process work */
 	LOG_DBG("Scheduling %s work", "process");
 	(void)sh_mqtt_work_reschedule(&sh->process_dwork, K_SECONDS(2));
-	sh_mqtt_context_unlock();
 	return;
 
 process_error:
 	LOG_DBG("%s: close MQTT, cleanup socket & reconnect", "connect");
 	sh_mqtt_close_and_cleanup(sh);
 	(void)sh_mqtt_work_reschedule(&sh->connect_dwork, K_SECONDS(1));
-	sh_mqtt_context_unlock();
 }
 
 static void sh_mqtt_subscribe_handler(struct k_work *work)
@@ -299,15 +288,9 @@ static void sh_mqtt_subscribe_handler(struct k_work *work)
 							  .message_id = 1U };
 	int rc;
 
-	if (sh->network_state != SHELL_MQTT_NETWORK_CONNECTED) {
+	if (!atomic_get(&sh->is_net_connected)) {
 		LOG_DBG("%s_work while %s", "subscribe", "network disconnected");
-		return;
-	}
-
-	/* If context can't be locked, that means net conn cb locked it */
-	if (sh_mqtt_context_lock(K_NO_WAIT) != 0) {
-		/* In that case we should simply return */
-		LOG_DBG("%s_work unable to lock context", "subscribe");
+		cancel_dworks_and_cleanup(sh);
 		return;
 	}
 
@@ -339,7 +322,6 @@ static void sh_mqtt_subscribe_handler(struct k_work *work)
 
 		LOG_DBG("Scheduling MQTT process work");
 		(void)sh_mqtt_work_reschedule(&sh->process_dwork, PROCESS_INTERVAL);
-		sh_mqtt_context_unlock();
 
 		LOG_INF("Logs will be published to: %s", sh->pub_topic);
 		LOG_INF("Subscribing shell cmds from: %s", sh->sub_topic);
@@ -351,7 +333,6 @@ subscribe_error:
 	LOG_DBG("%s: close MQTT, cleanup socket & reconnect", "subscribe");
 	sh_mqtt_close_and_cleanup(sh);
 	(void)sh_mqtt_work_reschedule(&sh->connect_dwork, K_SECONDS(2));
-	sh_mqtt_context_unlock();
 }
 
 /* Work routine to connect to MQTT */
@@ -361,15 +342,9 @@ static void sh_mqtt_connect_handler(struct k_work *work)
 	struct shell_mqtt *sh = sh_mqtt;
 	int rc;
 
-	if (sh->network_state != SHELL_MQTT_NETWORK_CONNECTED) {
+	if (!atomic_get(&sh->is_net_connected)) {
 		LOG_DBG("%s_work while %s", "connect", "network disconnected");
-		return;
-	}
-
-	/* If context can't be locked, that means net conn cb locked it */
-	if (sh_mqtt_context_lock(K_NO_WAIT) != 0) {
-		/* In that case we should simply return */
-		LOG_DBG("%s_work unable to lock context", "connect");
+		cancel_dworks_and_cleanup(sh);
 		return;
 	}
 
@@ -384,7 +359,6 @@ static void sh_mqtt_connect_handler(struct k_work *work)
 	rc = get_mqtt_broker_addrinfo(sh);
 	if (rc != 0) {
 		(void)sh_mqtt_work_reschedule(&sh->connect_dwork, K_SECONDS(1));
-		sh_mqtt_context_unlock();
 		return;
 	}
 
@@ -425,14 +399,12 @@ static void sh_mqtt_connect_handler(struct k_work *work)
 
 	LOG_DBG("Scheduling %s work", "subscribe");
 	(void)sh_mqtt_work_reschedule(&sh->subscribe_dwork, K_SECONDS(2));
-	sh_mqtt_context_unlock();
 	return;
 
 connect_error:
 	LOG_DBG("%s: close MQTT, cleanup socket & reconnect", "connect");
 	sh_mqtt_close_and_cleanup(sh);
 	(void)sh_mqtt_work_reschedule(&sh->connect_dwork, K_SECONDS(2));
-	sh_mqtt_context_unlock();
 }
 
 static int sh_mqtt_publish(struct shell_mqtt *sh, uint8_t *data, uint32_t len)
@@ -469,7 +441,11 @@ static void sh_mqtt_publish_handler(struct k_work *work)
 	struct shell_mqtt *sh = sh_mqtt;
 	int rc;
 
-	(void)sh_mqtt_context_lock(K_FOREVER);
+	if (!atomic_get(&sh->is_net_connected)) {
+		LOG_DBG("%s_work while %s", "publish", "network disconnected");
+		cancel_dworks_and_cleanup(sh);
+		return;
+	}
 
 	rc = sh_mqtt_publish_tx_buf(sh, true);
 	if (rc != 0) {
@@ -477,34 +453,6 @@ static void sh_mqtt_publish_handler(struct k_work *work)
 		sh_mqtt_close_and_cleanup(sh);
 		(void)sh_mqtt_work_reschedule(&sh->connect_dwork, K_SECONDS(2));
 	}
-
-	sh_mqtt_context_unlock();
-}
-
-static void cancel_dworks_and_cleanup(struct shell_mqtt *sh)
-{
-	(void)k_work_cancel_delayable(&sh->connect_dwork);
-	(void)k_work_cancel_delayable(&sh->subscribe_dwork);
-	(void)k_work_cancel_delayable(&sh->process_dwork);
-	(void)k_work_cancel_delayable(&sh->publish_dwork);
-	sh_mqtt_close_and_cleanup(sh);
-}
-
-static void net_disconnect_handler(struct k_work *work)
-{
-	ARG_UNUSED(work);
-	struct shell_mqtt *sh = sh_mqtt;
-
-	LOG_WRN("Network %s", "disconnected");
-	sh->network_state = SHELL_MQTT_NETWORK_DISCONNECTED;
-
-	/* Stop all possible work */
-	(void)sh_mqtt_context_lock(K_FOREVER);
-	cancel_dworks_and_cleanup(sh);
-	sh_mqtt_context_unlock();
-	/* If the transport was requested, the connect work will be rescheduled
-	 * when internet is connected again
-	 */
 }
 
 /* Network connection event handler */
@@ -513,14 +461,13 @@ static void network_evt_handler(struct net_mgmt_event_callback *cb, uint64_t mgm
 {
 	struct shell_mqtt *sh = sh_mqtt;
 
-	if ((mgmt_event == NET_EVENT_L4_CONNECTED) &&
-	    (sh->network_state == SHELL_MQTT_NETWORK_DISCONNECTED)) {
+	if (mgmt_event == NET_EVENT_L4_CONNECTED) {
 		LOG_WRN("Network %s", "connected");
-		sh->network_state = SHELL_MQTT_NETWORK_CONNECTED;
+		atomic_set(&sh->is_net_connected, true);
 		(void)sh_mqtt_work_reschedule(&sh->connect_dwork, K_SECONDS(1));
-	} else if ((mgmt_event == NET_EVENT_L4_DISCONNECTED) &&
-		   (sh->network_state == SHELL_MQTT_NETWORK_CONNECTED)) {
-		(void)sh_mqtt_work_submit(&sh->net_disconnected_work);
+	} else if (mgmt_event == NET_EVENT_L4_DISCONNECTED) {
+		LOG_WRN("Network %s", "disconnected");
+		atomic_set(&sh->is_net_connected, false);
 	}
 }
 
@@ -679,7 +626,6 @@ static int init(const struct shell_transport *transport, const void *config,
 	k_work_queue_start(&sh->workq, sh_mqtt_workq_stack,
 			   K_KERNEL_STACK_SIZEOF(sh_mqtt_workq_stack), K_PRIO_COOP(7), NULL);
 	(void)k_thread_name_set(&sh->workq.thread, "sh_mqtt_workq");
-	k_work_init(&sh->net_disconnected_work, net_disconnect_handler);
 	k_work_init_delayable(&sh->connect_dwork, sh_mqtt_connect_handler);
 	k_work_init_delayable(&sh->subscribe_dwork, sh_mqtt_subscribe_handler);
 	k_work_init_delayable(&sh->process_dwork, sh_mqtt_process_handler);
@@ -688,7 +634,7 @@ static int init(const struct shell_transport *transport, const void *config,
 	LOG_DBG("Initializing listener for network");
 	net_mgmt_init_event_callback(&sh->mgmt_cb, network_evt_handler, NET_EVENT_MASK);
 
-	sh->network_state = SHELL_MQTT_NETWORK_DISCONNECTED;
+	atomic_set(&sh->is_net_connected, false);
 	sh->transport_state = SHELL_MQTT_TRANSPORT_DISCONNECTED;
 	sh->subscribe_state = SHELL_MQTT_NOT_SUBSCRIBED;
 

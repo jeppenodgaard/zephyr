@@ -14,6 +14,7 @@
 #include <zephyr/net/net_event.h>
 #include <zephyr/net/conn_mgr_monitor.h>
 #include <zephyr/net/mqtt.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/ring_buffer.h>
 
 #ifdef __cplusplus
@@ -79,7 +80,6 @@ struct shell_mqtt {
 
 	/** work */
 	struct k_work_q workq;
-	struct k_work net_disconnected_work;
 	struct k_work_delayable connect_dwork;
 	struct k_work_delayable subscribe_dwork;
 	struct k_work_delayable process_dwork;
@@ -98,10 +98,7 @@ struct shell_mqtt {
 	} subscribe_state;
 
 	/** Network states */
-	enum sh_mqtt_network_state {
-		SHELL_MQTT_NETWORK_DISCONNECTED,
-		SHELL_MQTT_NETWORK_CONNECTED,
-	} network_state;
+	atomic_val_t is_net_connected;
 };
 
 #define SHELL_MQTT_DEFINE(_name)                                                                   \
